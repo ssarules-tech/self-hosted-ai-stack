@@ -1,0 +1,54 @@
+services:
+  lightrag-postgres:
+    image: pgvector/pgvector:pg18
+    container_name: lightrag-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lightrag
+      POSTGRES_PASSWORD_FILE: /run/secrets/lightrag_pg_password
+      POSTGRES_DB: lightrag
+    ports:
+      # Host-loopback only - no need for Tailscale/laptop access to the DB
+      # directly, only through LightRAG's own API.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql
+    secrets:
+      - lightrag_pg_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lightrag -d lightrag"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  lightrag:
+    image: ghcr.io/hkuds/lightrag:latest
+    container_name: lightrag
+    depends_on:
+      lightrag-postgres:
+        condition: service_healthy
+    ports:
+      # Loopback ONLY (since 8/31 security layer). Tailnet access to LightRAG
+      # goes through the scanning proxy pi_proxy.py on 127.0.0.1:9622, which
+      # tailscale-serve's to the tailnet. Direct writes bypassing the scanner
+      # are no longer possible from remote devices.
+      - "127.0.0.1:9621:9621"
+    volumes:
+      - ./data/rag_storage:/app/data/rag_storage
+      - ./data/inputs:/app/data/inputs
+      - ./data/prompts:/app/data/prompts
+      - ./.env:/app/.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    environment:
+      WORKING_DIR: "/app/data/rag_storage"
+      INPUT_DIR: "/app/data/inputs"
+      PROMPT_DIR: "/app/data/prompts"
+      HOST: "0.0.0.0"
+      PORT: "9621"
+
+secrets:
+  lightrag_pg_password:
+    file: ./secrets/lightrag_pg_password.txt
+

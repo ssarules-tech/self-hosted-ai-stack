@@ -1,0 +1,51 @@
+services:
+  llama-swap:
+    image: ghcr.io/mostlygeek/llama-swap:unified-cuda
+    container_name: llama-swap
+    restart: unless-stopped
+    environment:
+      # apiKeys reference in config.yaml uses ${env.LLAMA_SWAP_API_KEY}
+      - LLAMA_SWAP_API_KEY=${LLAMA_SWAP_API_KEY}
+
+    ports:
+      # OpenAI-compatible API — localhost only; this is a Hermes tool, not
+      # something the work laptop needs to reach directly.
+      - "127.0.0.1:8090:8080"
+    volumes:
+      # Z:\ bind mount — kept for the bge embedding/reranker models, which are
+      # small (~600MB) so the 9p penalty on their cold load is negligible.
+      # WARNING: this is a Docker Desktop 9p bind mount and is SLOW.
+      # Measured 2026-08-23, consistently across runs: ~200 MB/s.
+      - Z:\ai-models\gguf:/models:ro
+      # Named volume backed by ext4 INSIDE the WSL2 VM — no 9p bridge.
+      # Measured on the same box: ~1.6 GB/s, i.e. ~8x the bind mount.
+      # The 20.2GB KAT-Coder GGUF lives here so cold loads / TTL reloads /
+      # Docker restarts stop paying ~100s of pure I/O (observed ~3.5 min cold
+      # loads before this change). Steady-state inference is unaffected — once
+      # the weights are resident this changes nothing, it is purely a
+      # load-time fix.
+      # Populate with:
+      #   docker run --rm -v "Z:\ai-models\gguf\<model-dir>:/src:ro" \
+      #     -v llm-models:/dst alpine cp -v /src/<file> /dst/<model-dir>/
+      # Reclaim with: docker volume rm llm-models
+      - llm-models:/models-fast:ro
+      - ./config.yaml:/etc/llama-swap/config/config.yaml:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  # ext4-backed named volume living inside the WSL2 VM's VHDX. Holds the large
+  # KAT-Coder GGUF to bypass the ~200 MB/s 9p bind mount (see above).
+  #
+  # `external: true` is REQUIRED here. Without it, compose namespaces the volume
+  # as "<project>_llm-models" (i.e. llama-swap_llm-models) and creates a NEW
+  # EMPTY volume, so the container mounts nothing and llama-server fails with
+  # "No such file or directory". The 20.2GB copy was made into the un-prefixed
+  # "llm-models" volume, so we must reference it externally by its real name.
+  llm-models:
+    external: true
